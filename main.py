@@ -516,7 +516,6 @@ if current == "main":
         <div class="hero-sub">
             고객 데이터를 업로드하고, 탐색·전처리·모델 학습·성능 비교까지
             한 화면 흐름으로 수행할 수 있는 머신러닝 분석 앱입니다.
-        
         </div>
         <div class="hero-badges">
             <span class="hero-badge">EDA</span>
