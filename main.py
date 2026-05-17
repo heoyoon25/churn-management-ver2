@@ -6,12 +6,14 @@ import matplotlib
 import seaborn as sns
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
     f1_score, roc_curve, auc, confusion_matrix
 )
-from sklearn.preprocessing import LabelEncoder
 import re
 import warnings
 warnings.filterwarnings("ignore")
@@ -56,7 +58,6 @@ st.markdown("""
         background: linear-gradient(180deg, #f8faff 0%, #f5f7fb 100%);
     }
 
-    /* Sidebar */
     [data-testid="stSidebar"] {
         background: linear-gradient(180deg, #182132 0%, #1d2840 100%);
         border-right: 1px solid rgba(255,255,255,0.06);
@@ -142,7 +143,6 @@ st.markdown("""
         color: #e5e7eb !important;
     }
 
-    /* Main common */
     .page-wrap {
         padding-top: 0.3rem;
     }
@@ -209,15 +209,6 @@ st.markdown("""
     .section-subtitle {
         font-size: 0.92rem;
         color: var(--muted);
-        margin-bottom: 1rem;
-    }
-
-    .soft-card {
-        background: var(--card);
-        border: 1px solid #eef2f7;
-        border-radius: 18px;
-        padding: 1.2rem 1.2rem;
-        box-shadow: var(--shadow);
         margin-bottom: 1rem;
     }
 
@@ -315,6 +306,7 @@ st.markdown("""
         border-radius: 18px;
         padding: 1rem 1.1rem;
         box-shadow: var(--shadow);
+        margin-bottom: 1rem;
     }
 
     .stButton > button {
@@ -333,13 +325,6 @@ st.markdown("""
     .stDownloadButton > button {
         border-radius: 12px;
         font-weight: 800;
-    }
-
-    .block-label {
-        font-size: 0.92rem;
-        font-weight: 800;
-        color: #111827;
-        margin-bottom: 0.4rem;
     }
 
     .tiny-muted {
@@ -362,8 +347,10 @@ defaults = {
     "y_test": None,
     "lr_model": None,
     "dt_model": None,
+    "dnn_model": None,
     "lr_result": None,
     "dt_result": None,
+    "dnn_result": None,
     "selected_X": [],
     "selected_y": None,
     "split_ratio": "7:3",
@@ -377,7 +364,7 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # ─────────────────────────────────────────────────────────────
-# Helper UI functions
+# Helper functions
 # ─────────────────────────────────────────────────────────────
 def section_header(title, subtitle=""):
     st.markdown(f"""
@@ -402,12 +389,6 @@ def feature_card(icon, title, desc):
     </div>
     """, unsafe_allow_html=True)
 
-def soft_card_open():
-    st.markdown('<div class="soft-card">', unsafe_allow_html=True)
-
-def soft_card_close():
-    st.markdown('</div>', unsafe_allow_html=True)
-
 def check_data():
     if st.session_state.df is None:
         st.warning("⚠️ 먼저 메인 페이지에서 데이터를 업로드해 주세요.")
@@ -415,9 +396,24 @@ def check_data():
 
 def compute_metrics(model, X_test, y_test):
     y_pred = model.predict(X_test)
-    y_prob = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
-    fpr, tpr, _ = roc_curve(y_test, y_prob) if y_prob is not None else (None, None, None)
-    roc_auc = auc(fpr, tpr) if fpr is not None else None
+
+    y_prob = None
+    if hasattr(model, "predict_proba"):
+        try:
+            proba = model.predict_proba(X_test)
+            if proba.ndim == 2 and proba.shape[1] >= 2:
+                y_prob = proba[:, 1]
+        except Exception:
+            y_prob = None
+
+    fpr, tpr, roc_auc = None, None, None
+    try:
+        if y_prob is not None and len(np.unique(y_test)) == 2:
+            fpr, tpr, _ = roc_curve(y_test, y_prob)
+            roc_auc = auc(fpr, tpr)
+    except Exception:
+        pass
+
     return {
         "accuracy": accuracy_score(y_test, y_pred),
         "precision": precision_score(y_test, y_pred, average="weighted", zero_division=0),
@@ -429,6 +425,25 @@ def compute_metrics(model, X_test, y_test):
         "y_pred": y_pred,
         "cm": confusion_matrix(y_test, y_pred),
     }
+
+def plot_single_roc(result, title, color="#5b6cff"):
+    if result is None or result["fpr"] is None:
+        st.info("ROC curve is available for binary classification with probability output.")
+        return
+    fig, ax = plt.subplots(figsize=(5.5, 4.2))
+    ax.plot([0, 1], [0, 1], "k--", lw=1.2, alpha=0.6)
+    ax.plot(result["fpr"], result["tpr"], color=color, lw=2.4,
+            label=f"AUC = {result['auc']:.4f}")
+    ax.fill_between(result["fpr"], result["tpr"], alpha=0.10, color=color)
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.legend(loc="lower right")
+    ax.grid(alpha=0.25)
+    ax.spines[["top", "right"]].set_visible(False)
+    plt.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+    plt.close()
 
 # ─────────────────────────────────────────────────────────────
 # Sidebar
@@ -508,12 +523,13 @@ if current == "main":
             <span class="hero-badge">Preprocessing</span>
             <span class="hero-badge">Logistic Regression</span>
             <span class="hero-badge">Decision Tree</span>
+            <span class="hero-badge">DNN(MLP)</span>
             <span class="hero-badge">ROC / Confusion Matrix</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    section_header("주요 기능", "사이드바/메인 UI를 더 정돈된 대시보드 형태로 구성했습니다.")
+    section_header("주요 기능", "이상치 퍼센테이지 설정과 DNN 모형을 포함한 리팩토링 버전입니다.")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -521,7 +537,7 @@ if current == "main":
     with c2:
         feature_card("🧪", "탐색 & 전처리", "분포 확인, 결측치/이상치 처리, 문자열 숫자 변환, 인코딩을 지원합니다.")
     with c3:
-        feature_card("📈", "모델 비교", "Logistic Regression과 Decision Tree를 학습하고 성능을 비교합니다.")
+        feature_card("📈", "모델 비교", "Logistic Regression, Decision Tree, DNN(MLP)을 학습하고 비교합니다.")
 
     st.markdown('<div class="divider-space"></div>', unsafe_allow_html=True)
     section_header("데이터 업로드", "분석할 CSV 또는 Excel 파일을 업로드하세요.")
@@ -549,8 +565,10 @@ if current == "main":
             st.session_state.y_test = None
             st.session_state.lr_model = None
             st.session_state.dt_model = None
+            st.session_state.dnn_model = None
             st.session_state.lr_result = None
             st.session_state.dt_result = None
+            st.session_state.dnn_result = None
             st.session_state.missing_handled = False
             st.session_state.outlier_handled = False
             st.session_state.encoded = False
@@ -612,6 +630,12 @@ if current == "main":
             st.session_state.outlier_handled = False
             st.session_state.encoded = False
             st.session_state.convert_handled = False
+            st.session_state.lr_model = None
+            st.session_state.dt_model = None
+            st.session_state.dnn_model = None
+            st.session_state.lr_result = None
+            st.session_state.dt_result = None
+            st.session_state.dnn_result = None
 
             st.success("✅ 샘플 데이터가 생성되었습니다.")
             st.dataframe(sample_df.head(), use_container_width=True)
@@ -921,6 +945,7 @@ elif current == "preprocess":
 
     with tab2:
         df_cur = st.session_state.df
+
         num_cols = []
         for c in df_cur.columns:
             if pd.api.types.is_numeric_dtype(df_cur[c]):
@@ -934,37 +959,91 @@ elif current == "preprocess":
         if not num_cols:
             st.info("수치형 변수가 없습니다.")
         else:
-            outlier_info = []
-            for c in num_cols:
-                try:
-                    arr = df_cur[c].dropna().astype(float).values
-                    Q1 = float(np.quantile(arr, 0.25))
-                    Q3 = float(np.quantile(arr, 0.75))
-                    IQR = Q3 - Q1
-                    n_out = int(((arr < Q1 - 1.5 * IQR) | (arr > Q3 + 1.5 * IQR)).sum())
-                    outlier_info.append({
-                        "변수명": c,
-                        "이상치 수": n_out,
-                        "Q1": round(Q1, 2),
-                        "Q3": round(Q3, 2),
-                        "IQR": round(IQR, 2)
-                    })
-                except Exception:
-                    outlier_info.append({
-                        "변수명": c,
-                        "이상치 수": "계산불가",
-                        "Q1": "-", "Q3": "-", "IQR": "-"
-                    })
+            st.markdown("#### 이상치 기준 설정")
+            detect_basis = st.radio(
+                "이상치 판정 기준",
+                ["IQR 기준", "Percentile 기준"],
+                horizontal=True,
+                key="outlier_basis"
+            )
 
-            st.dataframe(pd.DataFrame(outlier_info), use_container_width=True)
+            info_records = []
+            if detect_basis == "IQR 기준":
+                iqr_multiplier = st.slider(
+                    "IQR multiplier (이상치 강도)",
+                    min_value=0.5, max_value=3.0, value=1.5, step=0.1,
+                    help="작을수록 더 많은 값을 이상치로 판정합니다."
+                )
+                for c in num_cols:
+                    try:
+                        arr = df_cur[c].dropna().astype(float).values
+                        Q1 = float(np.quantile(arr, 0.25))
+                        Q3 = float(np.quantile(arr, 0.75))
+                        IQR = Q3 - Q1
+                        lo = Q1 - iqr_multiplier * IQR
+                        hi = Q3 + iqr_multiplier * IQR
+                        mask = (arr < lo) | (arr > hi)
+                        out_pct = mask.mean() * 100
+                        info_records.append({
+                            "Variable": c,
+                            "Outliers": int(mask.sum()),
+                            "Outlier %": round(out_pct, 2),
+                            "Lower Bound": round(lo, 3),
+                            "Upper Bound": round(hi, 3),
+                        })
+                    except Exception:
+                        info_records.append({
+                            "Variable": c,
+                            "Outliers": "N/A",
+                            "Outlier %": "N/A",
+                            "Lower Bound": "-",
+                            "Upper Bound": "-",
+                        })
+            else:
+                total_pct = st.slider(
+                    "Total outlier percentage (%)",
+                    min_value=1.0, max_value=20.0, value=5.0, step=0.5,
+                    help="예: 5%면 하위 2.5% + 상위 2.5%를 이상치로 간주합니다."
+                )
+                tail_pct = total_pct / 2.0
+                st.caption(f"Lower tail: {tail_pct:.2f}% / Upper tail: {tail_pct:.2f}%")
+                for c in num_cols:
+                    try:
+                        arr = df_cur[c].dropna().astype(float).values
+                        lo = float(np.percentile(arr, tail_pct))
+                        hi = float(np.percentile(arr, 100 - tail_pct))
+                        mask = (arr < lo) | (arr > hi)
+                        out_pct = mask.mean() * 100
+                        info_records.append({
+                            "Variable": c,
+                            "Outliers": int(mask.sum()),
+                            "Outlier %": round(out_pct, 2),
+                            "Lower Bound": round(lo, 3),
+                            "Upper Bound": round(hi, 3),
+                        })
+                    except Exception:
+                        info_records.append({
+                            "Variable": c,
+                            "Outliers": "N/A",
+                            "Outlier %": "N/A",
+                            "Lower Bound": "-",
+                            "Upper Bound": "-",
+                        })
+
+            st.dataframe(pd.DataFrame(info_records), use_container_width=True)
 
             out_method = st.radio(
                 "처리 방법",
-                ["IQR 기반 클리핑 (Winsorizing)", "IQR 기반 행 제거"],
+                ["Clipping", "Row Removal"],
                 horizontal=True,
                 key="outlier_method"
             )
-            out_cols = st.multiselect("처리할 변수 선택", num_cols, default=num_cols, key="outlier_cols")
+            out_cols = st.multiselect(
+                "처리할 변수 선택",
+                num_cols,
+                default=num_cols,
+                key="outlier_cols"
+            )
 
             if st.button("✅ 이상치 처리 실행", key="btn_outlier"):
                 df_work = st.session_state.df.copy()
@@ -974,18 +1053,24 @@ elif current == "preprocess":
                 for c in out_cols:
                     try:
                         arr = df_work[c].dropna().astype(float).values
-                        Q1 = float(np.quantile(arr, 0.25))
-                        Q3 = float(np.quantile(arr, 0.75))
-                        IQR = Q3 - Q1
-                        lo = Q1 - 1.5 * IQR
-                        hi = Q3 + 1.5 * IQR
+
+                        if detect_basis == "IQR 기준":
+                            Q1 = float(np.quantile(arr, 0.25))
+                            Q3 = float(np.quantile(arr, 0.75))
+                            IQR = Q3 - Q1
+                            lo = Q1 - iqr_multiplier * IQR
+                            hi = Q3 + iqr_multiplier * IQR
+                        else:
+                            lo = float(np.percentile(arr, tail_pct))
+                            hi = float(np.percentile(arr, 100 - tail_pct))
 
                         df_work[c] = df_work[c].astype(float)
 
-                        if out_method == "IQR 기반 클리핑 (Winsorizing)":
+                        if out_method == "Clipping":
                             df_work[c] = df_work[c].clip(lo, hi)
                         else:
                             df_work = df_work[(df_work[c] >= lo) & (df_work[c] <= hi)]
+
                         processed.append(c)
                     except Exception as e:
                         skipped.append(f"{c} ({e})")
@@ -1266,7 +1351,7 @@ elif current == "preprocess":
 # ─────────────────────────────────────────────────────────────
 elif current == "model":
     check_data()
-    section_header("모델 학습", "Logistic Regression과 Decision Tree를 학습합니다.")
+    section_header("모델 학습", "Logistic Regression, Decision Tree, DNN(MLP)을 학습합니다.")
 
     if st.session_state.X_train is None:
         st.warning("⚠️ 전처리 페이지에서 데이터 분할을 먼저 완료해 주세요.")
@@ -1289,7 +1374,11 @@ elif current == "model":
     </div>
     """, unsafe_allow_html=True)
 
-    model_tab1, model_tab2 = st.tabs(["📉 Logistic Regression", "🌳 Decision Tree"])
+    model_tab1, model_tab2, model_tab3 = st.tabs([
+        "📉 Logistic Regression",
+        "🌳 Decision Tree",
+        "🧠 DNN (MLP)"
+    ])
 
     with model_tab1:
         c1, c2, c3 = st.columns(3)
@@ -1328,14 +1417,18 @@ elif current == "model":
             with m4:
                 metric_card(f"{r['f1']:.4f}", "F1-Score")
 
-            fig_cm, ax_cm = plt.subplots(figsize=(4, 3.5))
-            sns.heatmap(r["cm"], annot=True, fmt="d", cmap="Blues", ax=ax_cm, linewidths=0.5)
-            ax_cm.set_title("Confusion Matrix", fontweight="bold")
-            ax_cm.set_xlabel("Predicted")
-            ax_cm.set_ylabel("Actual")
-            plt.tight_layout()
-            st.pyplot(fig_cm, use_container_width=False)
-            plt.close()
+            c_left, c_right = st.columns([1, 1])
+            with c_left:
+                fig_cm, ax_cm = plt.subplots(figsize=(4.2, 3.5))
+                sns.heatmap(r["cm"], annot=True, fmt="d", cmap="Blues", ax=ax_cm, linewidths=0.5)
+                ax_cm.set_title("Confusion Matrix", fontweight="bold")
+                ax_cm.set_xlabel("Predicted")
+                ax_cm.set_ylabel("Actual")
+                plt.tight_layout()
+                st.pyplot(fig_cm, use_container_width=True)
+                plt.close()
+            with c_right:
+                plot_single_roc(r, "ROC Curve", "#5b6cff")
 
     with model_tab2:
         c1, c2, c3 = st.columns(3)
@@ -1374,51 +1467,150 @@ elif current == "model":
             with m4:
                 metric_card(f"{r['f1']:.4f}", "F1-Score")
 
-            fi = pd.Series(
-                st.session_state.dt_model.feature_importances_,
-                index=X_train.columns
-            ).sort_values(ascending=True).tail(15)
+            row1, row2 = st.columns([1, 1])
+            with row1:
+                plot_single_roc(r, "Decision Tree ROC Curve", "#14b8a6")
+            with row2:
+                fi = pd.Series(
+                    st.session_state.dt_model.feature_importances_,
+                    index=X_train.columns
+                ).sort_values(ascending=True).tail(15)
 
-            fig_fi, ax_fi = plt.subplots(figsize=(7, 4))
-            fi.plot(kind="barh", ax=ax_fi, color="#5b6cff", edgecolor="white")
-            ax_fi.set_title("Feature Importance (Top 15)", fontweight="bold")
-            ax_fi.set_xlabel("Importance")
-            ax_fi.set_ylabel("Feature")
-            ax_fi.spines[["top", "right"]].set_visible(False)
+                fig_fi, ax_fi = plt.subplots(figsize=(6.5, 4.2))
+                fi.plot(kind="barh", ax=ax_fi, color="#5b6cff", edgecolor="white")
+                ax_fi.set_title("Feature Importance (Top 15)", fontweight="bold")
+                ax_fi.set_xlabel("Importance")
+                ax_fi.set_ylabel("Feature")
+                ax_fi.spines[["top", "right"]].set_visible(False)
+                plt.tight_layout()
+                st.pyplot(fig_fi, use_container_width=True)
+                plt.close()
+
+            fig_cm, ax_cm = plt.subplots(figsize=(4.2, 3.5))
+            sns.heatmap(r["cm"], annot=True, fmt="d", cmap="Blues", ax=ax_cm, linewidths=0.5)
+            ax_cm.set_title("Confusion Matrix", fontweight="bold")
+            ax_cm.set_xlabel("Predicted")
+            ax_cm.set_ylabel("Actual")
             plt.tight_layout()
-            st.pyplot(fig_fi, use_container_width=True)
+            st.pyplot(fig_cm, use_container_width=False)
             plt.close()
+
+    with model_tab3:
+        st.markdown("#### DNN (MLPClassifier) Hyperparameters")
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            hidden_option = st.selectbox(
+                "Hidden Layers",
+                ["64", "128", "64,32", "128,64", "128,64,32"],
+                index=2
+            )
+        with d2:
+            dnn_alpha = st.select_slider(
+                "Alpha",
+                options=[0.0001, 0.001, 0.01, 0.1],
+                value=0.0001
+            )
+        with d3:
+            dnn_lr = st.select_slider(
+                "Learning Rate Init",
+                options=[0.0001, 0.001, 0.01],
+                value=0.001
+            )
+
+        d4, d5, d6 = st.columns(3)
+        with d4:
+            dnn_max_iter = st.slider("Max Iter", 100, 1000, 300, 50)
+        with d5:
+            dnn_activation = st.selectbox("Activation", ["relu", "tanh", "logistic"])
+        with d6:
+            dnn_batch_size = st.selectbox("Batch Size", ["auto", 16, 32, 64, 128], index=2)
+
+        if st.button("🚀 DNN 학습", key="btn_dnn"):
+            with st.spinner("DNN 학습 중..."):
+                try:
+                    hidden_layers = tuple(int(x.strip()) for x in hidden_option.split(","))
+
+                    dnn_pipe = Pipeline([
+                        ("scaler", StandardScaler()),
+                        ("mlp", MLPClassifier(
+                            hidden_layer_sizes=hidden_layers,
+                            activation=dnn_activation,
+                            alpha=dnn_alpha,
+                            learning_rate_init=dnn_lr,
+                            max_iter=dnn_max_iter,
+                            batch_size=dnn_batch_size,
+                            random_state=42
+                        ))
+                    ])
+
+                    dnn_pipe.fit(X_train, y_train)
+                    st.session_state.dnn_model = dnn_pipe
+                    st.session_state.dnn_result = compute_metrics(dnn_pipe, X_test, y_test)
+                    st.success("✅ DNN 학습 완료")
+                except Exception as e:
+                    st.error(f"❌ DNN 학습 오류: {e}")
+
+        if st.session_state.dnn_result:
+            r = st.session_state.dnn_result
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                metric_card(f"{r['accuracy']:.4f}", "Accuracy")
+            with m2:
+                metric_card(f"{r['precision']:.4f}", "Precision")
+            with m3:
+                metric_card(f"{r['recall']:.4f}", "Recall")
+            with m4:
+                metric_card(f"{r['f1']:.4f}", "F1-Score")
+
+            c_left, c_right = st.columns([1, 1])
+            with c_left:
+                fig_cm, ax_cm = plt.subplots(figsize=(4.2, 3.5))
+                sns.heatmap(r["cm"], annot=True, fmt="d", cmap="Purples", ax=ax_cm, linewidths=0.5)
+                ax_cm.set_title("Confusion Matrix", fontweight="bold")
+                ax_cm.set_xlabel("Predicted")
+                ax_cm.set_ylabel("Actual")
+                plt.tight_layout()
+                st.pyplot(fig_cm, use_container_width=True)
+                plt.close()
+            with c_right:
+                plot_single_roc(r, "DNN ROC Curve", "#7b61ff")
 
 # ─────────────────────────────────────────────────────────────
 # PAGE 5: Result
 # ─────────────────────────────────────────────────────────────
 elif current == "result":
     check_data()
-    section_header("결과 분석", "두 모델의 성능을 비교하고 결과를 저장합니다.")
+    section_header("결과 분석", "세 모델의 성능을 비교하고 결과를 저장합니다.")
 
     lr_r = st.session_state.lr_result
     dt_r = st.session_state.dt_result
+    dnn_r = st.session_state.dnn_result
 
-    if lr_r is None and dt_r is None:
+    if lr_r is None and dt_r is None and dnn_r is None:
         st.warning("⚠️ 모델 학습 페이지에서 모델을 먼저 학습해 주세요.")
         st.stop()
 
     metrics_rows = []
-    for name, r in [("Logistic Regression", lr_r), ("Decision Tree", dt_r)]:
+    for name, r in [
+        ("Logistic Regression", lr_r),
+        ("Decision Tree", dt_r),
+        ("DNN (MLP)", dnn_r)
+    ]:
         if r:
             metrics_rows.append({
                 "Model": name,
-                "Accuracy": f"{r['accuracy']:.4f}",
-                "Precision": f"{r['precision']:.4f}",
-                "Recall": f"{r['recall']:.4f}",
-                "F1-Score": f"{r['f1']:.4f}",
-                "AUC": f"{r['auc']:.4f}" if r["auc"] is not None else "N/A",
+                "Accuracy": float(r["accuracy"]),
+                "Precision": float(r["precision"]),
+                "Recall": float(r["recall"]),
+                "F1-Score": float(r["f1"]),
+                "AUC": float(r["auc"]) if r["auc"] is not None else np.nan,
             })
 
     if metrics_rows:
         result_df = pd.DataFrame(metrics_rows).set_index("Model")
+        display_df = result_df.copy().round(4)
         st.dataframe(
-            result_df.style.highlight_max(
+            display_df.style.highlight_max(
                 axis=0,
                 color="#dcfce7",
                 subset=["Accuracy", "Precision", "Recall", "F1-Score", "AUC"]
@@ -1429,39 +1621,44 @@ elif current == "result":
     section_header("성능 비교 차트", "Accuracy, Precision, Recall, F1-Score를 시각적으로 비교합니다.")
 
     metric_names = ["Accuracy", "Precision", "Recall", "F1-Score"]
-    lr_vals = [lr_r["accuracy"], lr_r["precision"], lr_r["recall"], lr_r["f1"]] if lr_r else None
-    dt_vals = [dt_r["accuracy"], dt_r["precision"], dt_r["recall"], dt_r["f1"]] if dt_r else None
+    model_results = {
+        "Logistic Regression": lr_r,
+        "Decision Tree": dt_r,
+        "DNN (MLP)": dnn_r
+    }
+    model_colors = {
+        "Logistic Regression": "#5b6cff",
+        "Decision Tree": "#14b8a6",
+        "DNN (MLP)": "#7b61ff"
+    }
 
-    fig_bar, ax_bar = plt.subplots(figsize=(9, 4.6))
+    available_models = [name for name, r in model_results.items() if r is not None]
+    values = {
+        name: [model_results[name]["accuracy"], model_results[name]["precision"],
+               model_results[name]["recall"], model_results[name]["f1"]]
+        for name in available_models
+    }
+
+    fig_bar, ax_bar = plt.subplots(figsize=(10, 4.8))
     x = np.arange(len(metric_names))
-    width = 0.35
+    total_models = max(len(available_models), 1)
+    width = 0.22 if total_models >= 3 else 0.35
 
-    if lr_vals:
-        bars1 = ax_bar.bar(
-            x - width/2, lr_vals, width,
-            label="Logistic Regression",
-            color="#5b6cff", edgecolor="white", alpha=0.92
+    offsets = np.linspace(-width, width, total_models) if total_models > 1 else [0]
+
+    for idx, name in enumerate(available_models):
+        vals = values[name]
+        bars = ax_bar.bar(
+            x + offsets[idx], vals, width,
+            label=name,
+            color=model_colors[name], edgecolor="white", alpha=0.92
         )
-        for bar in bars1:
+        for bar in bars:
             ax_bar.text(
                 bar.get_x() + bar.get_width()/2,
                 bar.get_height() + 0.005,
                 f"{bar.get_height():.3f}",
-                ha="center", va="bottom", fontsize=9, fontweight="bold"
-            )
-
-    if dt_vals:
-        bars2 = ax_bar.bar(
-            x + width/2, dt_vals, width,
-            label="Decision Tree",
-            color="#14b8a6", edgecolor="white", alpha=0.92
-        )
-        for bar in bars2:
-            ax_bar.text(
-                bar.get_x() + bar.get_width()/2,
-                bar.get_height() + 0.005,
-                f"{bar.get_height():.3f}",
-                ha="center", va="bottom", fontsize=9, fontweight="bold"
+                ha="center", va="bottom", fontsize=8, fontweight="bold"
             )
 
     ax_bar.set_xticks(x)
@@ -1476,20 +1673,19 @@ elif current == "result":
     st.pyplot(fig_bar, use_container_width=True)
     plt.close()
 
-    section_header("ROC Curve", "모델의 분류 성능을 ROC 곡선으로 비교합니다.")
+    section_header("ROC Curve", "각 모델의 ROC Curve와 AUC를 비교합니다.")
 
     fig_roc, ax_roc = plt.subplots(figsize=(8, 6))
     ax_roc.plot([0, 1], [0, 1], "k--", lw=1.5, alpha=0.6, label="Random (AUC = 0.50)")
 
-    colors = {"Logistic Regression": "#5b6cff", "Decision Tree": "#14b8a6"}
-    for name, r in [("Logistic Regression", lr_r), ("Decision Tree", dt_r)]:
+    for name, r in model_results.items():
         if r and r["fpr"] is not None:
             ax_roc.plot(
                 r["fpr"], r["tpr"],
-                color=colors[name], lw=2.5,
+                color=model_colors[name], lw=2.5,
                 label=f"{name} (AUC = {r['auc']:.4f})"
             )
-            ax_roc.fill_between(r["fpr"], r["tpr"], alpha=0.08, color=colors[name])
+            ax_roc.fill_between(r["fpr"], r["tpr"], alpha=0.08, color=model_colors[name])
 
     ax_roc.set_xlim([0, 1])
     ax_roc.set_ylim([0, 1.02])
@@ -1503,28 +1699,46 @@ elif current == "result":
     st.pyplot(fig_roc, use_container_width=True)
     plt.close()
 
-    section_header("Confusion Matrix", "예측 결과를 confusion matrix로 비교합니다.")
+    section_header("Confusion Matrix", "각 모델의 confusion matrix를 비교합니다.")
 
-    cm_cols = st.columns(2)
-    for col, (name, r) in zip(cm_cols, [("Logistic Regression", lr_r), ("Decision Tree", dt_r)]):
-        if r:
-            with col:
-                fig_cm, ax_cm = plt.subplots(figsize=(4, 3.5))
-                sns.heatmap(
-                    r["cm"], annot=True, fmt="d",
-                    cmap="Blues", ax=ax_cm, linewidths=0.5,
-                    cbar_kws={"shrink": 0.8}
-                )
-                ax_cm.set_title(name, fontsize=11, fontweight="bold")
-                ax_cm.set_xlabel("Predicted")
-                ax_cm.set_ylabel("Actual")
-                plt.tight_layout()
-                st.pyplot(fig_cm, use_container_width=True)
-                plt.close()
+    available_cm_models = [(name, r) for name, r in model_results.items() if r is not None]
+    cols = st.columns(len(available_cm_models)) if available_cm_models else []
+
+    for col, (name, r) in zip(cols, available_cm_models):
+        with col:
+            fig_cm, ax_cm = plt.subplots(figsize=(4, 3.3))
+            sns.heatmap(
+                r["cm"], annot=True, fmt="d",
+                cmap="Blues", ax=ax_cm, linewidths=0.5,
+                cbar_kws={"shrink": 0.8}
+            )
+            ax_cm.set_title(name, fontsize=11, fontweight="bold")
+            ax_cm.set_xlabel("Predicted")
+            ax_cm.set_ylabel("Actual")
+            plt.tight_layout()
+            st.pyplot(fig_cm, use_container_width=True)
+            plt.close()
+
+    if st.session_state.dt_model is not None:
+        section_header("Decision Tree Feature Importance", "Decision Tree가 어떤 변수를 중요하게 보는지 확인합니다.")
+        fi = pd.Series(
+            st.session_state.dt_model.feature_importances_,
+            index=st.session_state.X_train.columns
+        ).sort_values(ascending=True).tail(15)
+
+        fig_fi, ax_fi = plt.subplots(figsize=(8, 5))
+        fi.plot(kind="barh", ax=ax_fi, color="#5b6cff", edgecolor="white")
+        ax_fi.set_title("Decision Tree Feature Importance (Top 15)", fontweight="bold")
+        ax_fi.set_xlabel("Importance")
+        ax_fi.set_ylabel("Feature")
+        ax_fi.spines[["top", "right"]].set_visible(False)
+        plt.tight_layout()
+        st.pyplot(fig_fi, use_container_width=True)
+        plt.close()
 
     section_header("결과 저장", "모델 성능 비교표를 CSV로 다운로드할 수 있습니다.")
     if metrics_rows:
-        csv_result = result_df.to_csv(encoding="utf-8-sig")
+        csv_result = result_df.round(4).to_csv(encoding="utf-8-sig")
         st.download_button(
             label="📥 성능 지표 CSV 다운로드",
             data=csv_result,
